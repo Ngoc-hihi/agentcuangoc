@@ -245,26 +245,43 @@ async def reclean_dataset(req: RecleanRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Lỗi khi tái xử lý dữ liệu: {str(e)}")
 
+def _ensure_serverless_dataset_loaded(fallback_sample: str = "retail"):
+    """Ensures a valid cleaned_df exists even if Vercel Serverless routed to a cold container."""
+    global processor, current_session
+    if processor.cleaned_df is not None and not processor.cleaned_df.empty:
+        return
+    restore_session()
+    if processor.cleaned_df is not None and not processor.cleaned_df.empty:
+        return
+    st = current_session.get("sample_type") or fallback_sample
+    current_session["sample_type"] = st
+    if st == "fnb":
+        df = get_fnb_sample_df()
+        current_session["business_type"] = current_session.get("business_type") or "Chuỗi Nhà hàng & F&B (PHAMHAANHNGOC Hospitality)"
+        current_session["problem_statement"] = current_session.get("problem_statement") or "Chi phí nguyên vật liệu và tỷ lệ hao hụt vượt định mức an toàn 12% tại các cơ sở"
+        current_session["additional_info"] = current_session.get("additional_info") or "Chuỗi 7 chi nhánh tại các thành phố lớn (Hà Nội, TP.HCM, Đà Nẵng)"
+    elif st == "saas":
+        df = get_saas_sample_df()
+        current_session["business_type"] = current_session.get("business_type") or "Công nghệ & Phần mềm Dịch vụ (B2B SaaS)"
+        current_session["problem_statement"] = current_session.get("problem_statement") or "Tỷ lệ khách hàng rời bỏ dịch vụ (Churn rate) gia tăng và chi phí chăm sóc sau bán chưa tối ưu"
+        current_session["additional_info"] = current_session.get("additional_info") or "Mô hình SaaS subscription 4 gói dịch vụ (Starter, Pro, Enterprise, Custom)"
+    else:
+        df = get_retail_sample_df()
+        current_session["business_type"] = current_session.get("business_type") or "Bán lẻ đa kênh & Thương mại điện tử (Omnichannel Retail)"
+        current_session["problem_statement"] = current_session.get("problem_statement") or "Tỷ lệ hủy đơn hàng cao và chi phí hoàn đơn kênh online tăng trong 2 quý gần nhất"
+        current_session["additional_info"] = current_session.get("additional_info") or "5 kênh bán hàng: Website, Shopee, TikTok Shop, Showroom, Lazada"
+    processor.load_from_dataframe(df)
+    processor.business_context = {
+        "business_type": current_session["business_type"],
+        "problem_statement": current_session["problem_statement"],
+        "additional_info": current_session["additional_info"]
+    }
+    processor.clean_data()
+
 @api_router.post("/approve")
 async def approve_and_generate_dashboard():
     global processor, current_session
-    if processor.cleaned_df is None or processor.cleaned_df.empty:
-        restore_session()
-
-    # Fallback to recreate sample if serverless cold container restarted without tmp
-    if processor.cleaned_df is None or processor.cleaned_df.empty:
-        st = current_session.get("sample_type")
-        if st:
-            df = get_fnb_sample_df() if st == "fnb" else (get_retail_sample_df() if st == "retail" else get_saas_sample_df())
-            processor.load_from_dataframe(df)
-            processor.business_context = {
-                "business_type": current_session["business_type"],
-                "problem_statement": current_session["problem_statement"],
-                "additional_info": current_session["additional_info"]
-            }
-            await asyncio.to_thread(processor.clean_data)
-        else:
-            raise HTTPException(status_code=400, detail="Chưa có dữ liệu sạch để phê duyệt. Vui lòng nạp dữ liệu ở Bước 2.")
+    await asyncio.to_thread(_ensure_serverless_dataset_loaded, "retail")
 
     try:
         analytics = await asyncio.to_thread(
@@ -291,22 +308,7 @@ async def approve_and_generate_dashboard():
 @api_router.post("/filter-dashboard")
 async def filter_dashboard(req: DashboardFilterRequest):
     global processor, current_session
-    if processor.cleaned_df is None or processor.cleaned_df.empty:
-        restore_session()
-
-    if processor.cleaned_df is None or processor.cleaned_df.empty:
-        st = current_session.get("sample_type")
-        if st:
-            df = get_fnb_sample_df() if st == "fnb" else (get_retail_sample_df() if st == "retail" else get_saas_sample_df())
-            processor.load_from_dataframe(df)
-            processor.business_context = {
-                "business_type": current_session["business_type"],
-                "problem_statement": current_session["problem_statement"],
-                "additional_info": current_session["additional_info"]
-            }
-            await asyncio.to_thread(processor.clean_data)
-        else:
-            raise HTTPException(status_code=400, detail="Chưa có dữ liệu để lọc.")
+    await asyncio.to_thread(_ensure_serverless_dataset_loaded, "retail")
 
     try:
         analytics = await asyncio.to_thread(
@@ -334,11 +336,7 @@ async def filter_dashboard(req: DashboardFilterRequest):
 @api_router.get("/export-docx")
 async def export_docx():
     global processor, current_session
-    if processor.cleaned_df is None or processor.cleaned_df.empty:
-        restore_session()
-
-    if processor.cleaned_df is None or processor.cleaned_df.empty:
-        raise HTTPException(status_code=400, detail="Không có dữ liệu sạch để xuất báo cáo.")
+    await asyncio.to_thread(_ensure_serverless_dataset_loaded, "retail")
 
     analytics = current_session.get("analytics_result")
     if not analytics:

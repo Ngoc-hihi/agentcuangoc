@@ -54,23 +54,27 @@ def get_genai_client():
 def is_ai_ready() -> bool:
     return bool(os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY)) and not _ai_circuit_broken
 
-def _safe_gemini_call(func, *args, timeout_sec: float = 3.5, **kwargs):
-    """Executes a Gemini call with a strict timeout so the server never hangs."""
+def _safe_gemini_call(func, *args, timeout_sec: float = 2.8, **kwargs):
+    """Executes a Gemini call with a strict non-blocking timeout so Vercel/Uvicorn never hangs."""
     global _ai_circuit_broken
     if _ai_circuit_broken:
         return None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            return future.result(timeout=timeout_sec)
-        except concurrent.futures.TimeoutError:
-            _ai_circuit_broken = True
-            logger.warning(f"Gemini API timeout sau {timeout_sec}s -> Kích hoạt Circuit Breaker, chuyển sang giải thuật phân tích C-Level tức thì.")
-            return None
-        except Exception as e:
-            _ai_circuit_broken = True
-            logger.warning(f"Gemini API gặp lỗi ({e}) -> Kích hoạt Circuit Breaker, chuyển sang giải thuật phân tích C-Level tức thì.")
-            return None
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *args, **kwargs)
+    try:
+        res = future.result(timeout=timeout_sec)
+        executor.shutdown(wait=False)
+        return res
+    except concurrent.futures.TimeoutError:
+        _ai_circuit_broken = True
+        executor.shutdown(wait=False, cancel_futures=True)
+        logger.warning(f"Gemini API timeout sau {timeout_sec}s -> Kích hoạt Circuit Breaker, chuyển sang giải thuật phân tích C-Level tức thì.")
+        return None
+    except Exception as e:
+        _ai_circuit_broken = True
+        executor.shutdown(wait=False, cancel_futures=True)
+        logger.warning(f"Gemini API gặp lỗi ({e}) -> Kích hoạt Circuit Breaker, chuyển sang giải thuật phân tích C-Level tức thì.")
+        return None
 
 def generate_ai_business_strategy(
     business_type: str,

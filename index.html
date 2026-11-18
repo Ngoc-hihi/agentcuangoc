@@ -814,7 +814,7 @@
                 <div class="chart-tag chart-tag-line" id="chart1Tag">Biểu Đồ Đường</div>
               </div>
               <div class="chart-canvas-wrap">
-                <canvas id="lineChart"></canvas>
+                <canvas id="trendChart"></canvas>
               </div>
             </div>
 
@@ -1128,7 +1128,220 @@
     <span class="toast-message" id="toastMsg">Thao tác thành công</span>
   </div>
 
-  <script src="/js/app.js"></script>
+  <!-- SELF-CONTAINED V3 INLINE STYLES & BRIDGE (GUARANTEES 100% VERCEL COMPATIBILITY) -->
+  <style id="v3-inline-styles">
+    .logo-mark {
+      width: 46px;
+      height: 46px;
+      background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 52%, #FFB88C 100%);
+      color: #FFFFFF;
+      border-radius: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 6px 16px rgba(255, 107, 107, 0.34), inset 0 1.5px 2px rgba(255, 255, 255, 0.45);
+      flex-shrink: 0;
+      border: 1.5px solid rgba(255, 255, 255, 0.55);
+    }
+    .ai-mascot-svg {
+      width: 34px;
+      height: 34px;
+      display: block;
+    }
+    .problem-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .problem-helper-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .combine-mode-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #64748B;
+      cursor: pointer;
+    }
+    .btn-clear-problem {
+      background: #FFF0EE;
+      color: #E11D48;
+      border: 1px solid rgba(255, 107, 107, 0.28);
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .problem-suggestions-box {
+      margin-top: 12px;
+      background: linear-gradient(180deg, #FFFDFB 0%, #FFF6F2 100%);
+      border: 1px solid rgba(255, 126, 103, 0.22);
+      border-radius: 14px;
+      padding: 12px 14px;
+    }
+    .suggestions-header {
+      margin-bottom: 8px;
+    }
+    .tag-pill.active-suggestion {
+      background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%) !important;
+      color: #FFFFFF !important;
+      border-color: transparent !important;
+      font-weight: 700;
+    }
+    .chart-tag-line {
+      background: #EFF6FF;
+      color: #2563EB;
+      border: 1px solid rgba(37, 99, 235, 0.25);
+    }
+    .chart-tag-rank {
+      background: #FFF7ED;
+      color: #EA580C;
+      border: 1px solid rgba(234, 88, 12, 0.25);
+    }
+    .chart-tag-contrib {
+      background: #F0FDF4;
+      color: #16A34A;
+      border: 1px solid rgba(22, 163, 74, 0.25);
+    }
+    .contribution-breakdown-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px dashed rgba(0, 0, 0, 0.08);
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    .contrib-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #FFF9F9;
+      border: 1px solid rgba(255, 94, 98, 0.18);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11.5px;
+    }
+    .contrib-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .contrib-name {
+      font-weight: 700;
+      color: #1E293B;
+    }
+    .contrib-val {
+      font-weight: 800;
+      color: #FF5E62;
+    }
+    .contrib-pct {
+      background: rgba(255, 94, 98, 0.14);
+      color: #E11D48;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 10.5px;
+    }
+  </style>
+
+  <script src="/js/app.js?v=3.2"></script>
+  <script id="v3-inline-bridge">
+    (function() {
+      let fallbackRankChart = null;
+      const origFetch = window.fetch;
+      window.fetch = async function(...args) {
+        const res = await origFetch.apply(this, args);
+        try {
+          const url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
+          if (url.includes("/approve") || url.includes("/filter-dashboard")) {
+            const clone = res.clone();
+            clone.json().then(data => {
+              if (data && data.analytics && data.analytics.charts) {
+                setTimeout(() => {
+                  const charts = data.analytics.charts;
+                  // Ensure Line Chart (trendChart) has fill: false and clean title
+                  const tCanvas = document.getElementById("trendChart");
+                  if (tCanvas && window.Chart && typeof Chart.getChart === "function") {
+                    const existingTrend = Chart.getChart(tCanvas);
+                    if (existingTrend && existingTrend.data && existingTrend.data.datasets && existingTrend.data.datasets[0]) {
+                      existingTrend.data.datasets[0].fill = false;
+                      existingTrend.data.datasets[0].backgroundColor = "transparent";
+                      existingTrend.update();
+                    }
+                  }
+                  // Ensure Horizontal Ranking Bar Chart is rendered even if external app.js is cached
+                  const rCanvas = document.getElementById("rankingChart");
+                  if (rCanvas && window.Chart && charts.ranking_bar) {
+                    const existingRank = typeof Chart.getChart === "function" ? Chart.getChart(rCanvas) : null;
+                    if (!existingRank) {
+                      if (fallbackRankChart) fallbackRankChart.destroy();
+                      const rData = charts.ranking_bar;
+                      const rTitle = document.getElementById("rankingChartTitle");
+                      if (rTitle && rData.title) rTitle.textContent = rData.title;
+                      const palette = ["#FF5E62", "#FF755A", "#FF8E53", "#FFA766", "#FFBF7B", "#FFD492", "#FFE4AB"];
+                      fallbackRankChart = new Chart(rCanvas.getContext("2d"), {
+                        type: "bar",
+                        data: {
+                          labels: rData.labels || [],
+                          datasets: [{
+                            label: "Giá trị xếp hạng",
+                            data: rData.data || [],
+                            backgroundColor: palette.slice(0, (rData.labels || []).length),
+                            borderRadius: 6
+                          }]
+                        },
+                        options: {
+                          indexAxis: "y",
+                          responsive: true,
+                          maintainAspectRatio: false,
+                          plugins: { legend: { display: false } },
+                          scales: { x: { grid: { color: "rgba(0,0,0,0.04)" } }, y: { grid: { display: false } } }
+                        }
+                      });
+                    }
+                  }
+                  // Ensure Contribution Breakdown Pills (Number & %) are populated
+                  const pillsBox = document.getElementById("distributionPills");
+                  const dist = charts.distribution_pie;
+                  if (pillsBox && dist && pillsBox.children.length === 0) {
+                    const colors = ["#FF5E62", "#FF9966", "#FFCC80", "#80CBC4", "#9FA8DA", "#F48FB1", "#CE93D8"];
+                    const slices = dist.detailed_slices || (dist.labels || []).map((lbl, idx) => ({
+                      label: lbl,
+                      formatted_value: (dist.formatted_values && dist.formatted_values[idx]) || String((dist.data && dist.data[idx]) || 0),
+                      percentage_str: (dist.percentages && dist.percentages[idx] !== undefined) ? dist.percentages[idx] + "%" : ""
+                    }));
+                    pillsBox.innerHTML = "";
+                    slices.forEach((sl, idx) => {
+                      const pill = document.createElement("div");
+                      pill.className = "contrib-pill";
+                      pill.innerHTML =
+                        '<span class="contrib-dot" style="background:' + colors[idx % colors.length] + '"></span>' +
+                        '<span class="contrib-name">' + (sl.label || "") + ':</span>' +
+                        '<span class="contrib-val">' + (sl.formatted_value || "") + '</span>' +
+                        (sl.percentage_str ? '<span class="contrib-pct">(' + sl.percentage_str + ')</span>' : "");
+                      pillsBox.appendChild(pill);
+                    });
+                  }
+                }, 80);
+              }
+            }).catch(() => {});
+          }
+        } catch (e) {}
+        return res;
+      };
+    })();
+  </script>
 </body>
 
 </html>

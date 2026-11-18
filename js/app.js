@@ -16,11 +16,15 @@ document.addEventListener("DOMContentLoaded", () => {
     previewRows: [],
     previewCols: [],
     charts: {
-      trend: null,
+      area: null,
+      ranking: null,
       category: null,
-      distribution: null
+      distribution: null,
+      trend: null
     }
   };
+
+  let currentTrendMode = "line"; // Default: Biểu Đồ Đường (chuẩn Line Chart)
 
   // Safe JSON API Fetch Helper (Prevents Vercel 404 HTML Unexpected Token crashes & auto-fallbacks /api <-> root)
   async function safeFetchJson(url, options = {}) {
@@ -466,12 +470,49 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===================================================
   // STEP 2 INTERACTIONS: CONTEXT & FILE UPLOAD
   // ===================================================
+  const chkCombineSuggestions = document.getElementById("chkCombineSuggestions");
+  const btnClearProblem = document.getElementById("btnClearProblem");
+
   quickTags.forEach(tag => {
     tag.addEventListener("click", () => {
-      inputProblem.value = tag.getAttribute("data-text");
-      showToast("Đã điền gợi ý vấn đề phân tích");
+      const text = (tag.getAttribute("data-text") || "").trim();
+      if (!text) return;
+
+      const isCombine = chkCombineSuggestions ? chkCombineSuggestions.checked : false;
+      if (!isCombine) {
+        quickTags.forEach(t => t.classList.remove("active-suggestion"));
+        tag.classList.add("active-suggestion");
+        inputProblem.value = text;
+        showToast("Đã chọn câu hỏi trọng tâm phân tích");
+      } else {
+        const currentVal = inputProblem.value.trim();
+        if (tag.classList.contains("active-suggestion")) {
+          tag.classList.remove("active-suggestion");
+          const parts = currentVal.split(/\s*\|\s*|\n+/).map(s => s.trim()).filter(Boolean);
+          const filtered = parts.filter(p => p !== text);
+          inputProblem.value = filtered.join(" | ");
+          showToast("Đã bỏ chọn câu hỏi gợi ý");
+        } else {
+          tag.classList.add("active-suggestion");
+          if (!currentVal) {
+            inputProblem.value = text;
+          } else if (!currentVal.includes(text)) {
+            inputProblem.value = currentVal + " | " + text;
+          }
+          showToast("Đã thêm câu hỏi vào vấn đề cần phân tích trọng tâm");
+        }
+      }
     });
   });
+
+  if (btnClearProblem) {
+    btnClearProblem.addEventListener("click", () => {
+      inputProblem.value = "";
+      quickTags.forEach(t => t.classList.remove("active-suggestion"));
+      inputProblem.focus();
+      showToast("Đã xóa trắng ô vấn đề phân tích");
+    });
+  }
 
   // Dropzone drag-drop
   ["dragenter", "dragover"].forEach(evName => {
@@ -1030,8 +1071,12 @@ document.addEventListener("DOMContentLoaded", () => {
       kpiContainer.appendChild(card);
     });
 
-    // Render Charts
-    renderCharts(analytics.charts || {});
+    // Render Charts safely so step transition is never blocked
+    try {
+      renderCharts(analytics.charts || {});
+    } catch (chartErr) {
+      console.warn("Chart render warning:", chartErr);
+    }
 
     // Executive Overview
     overviewBullets.innerHTML = "";
@@ -1082,114 +1127,322 @@ document.addEventListener("DOMContentLoaded", () => {
     rationaleImpact.textContent = rat.expected_impact || "";
   }
 
-  // Chart.js Rendering
+  // Helper to format metric numbers cleanly
+  function formatMetricValue(val, unit = "") {
+    if (val === null || val === undefined || isNaN(val)) return "0";
+    const num = Number(val);
+    if (num >= 1000000000) {
+      return (num / 1000000000).toFixed(2) + " tỷ ₫";
+    }
+    if (num >= 1000000) {
+      return (num / 1000000).toFixed(1) + " tr ₫";
+    }
+    if (unit === "%") {
+      return num.toFixed(1) + "%";
+    }
+    if (unit && unit.includes("điểm")) {
+      return num.toFixed(2) + "/5.0";
+    }
+    return num.toLocaleString() + (unit ? " " + unit : "");
+  }
+
+  // Chart.js Rendering (4 Multi-dimensional Charts: 1. Line, 2. Ranking Bar, 3. Category Bar, 4. Donut + Number/%)
   function renderCharts(chartsData) {
-    // 1. Time Trend Chart
+    if (!chartsData) return;
+
+    // 1. BIỂU ĐỒ ĐẦU TIÊN: BIỂU ĐỒ ĐƯỜNG (PURE LINE CHART - XU HƯỚNG THEO THỜI GIAN)
     if (state.charts.trend) state.charts.trend.destroy();
-    const trendCtx = document.getElementById("trendChart").getContext("2d");
-    const trendData = chartsData.trend || { labels: [], data: [] };
-    document.getElementById("chart1Title").textContent = trendData.title || "Xu Hướng Tăng Trưởng Theo Thời Gian";
+    if (state.charts.area) state.charts.area.destroy();
+    const lineCanvas = document.getElementById("lineChart") || document.getElementById("trendChart");
+    if (lineCanvas) {
+      const lineCtx = lineCanvas.getContext("2d");
+      const lineData = chartsData.line_chart || chartsData.trend || { labels: [], data: [] };
+      const lineTitleEl = document.getElementById("chart1Title");
+      if (lineTitleEl) lineTitleEl.textContent = lineData.title || "Biểu Đồ Đường: Xu Hướng Theo Thời Gian";
 
-    state.charts.trend = new Chart(trendCtx, {
-      type: "line",
-      data: {
-        labels: trendData.labels,
-        datasets: [{
-          label: "Giá trị",
-          data: trendData.data,
-          borderColor: "#FF5E62",
-          backgroundColor: "rgba(255, 94, 98, 0.12)",
-          fill: true,
-          tension: 0.35,
-          borderWidth: 2.5,
-          pointBackgroundColor: "#FF5E62",
-          pointRadius: 4,
-          pointHoverRadius: 6
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
+      state.charts.trend = new Chart(lineCtx, {
+        type: "line",
+        data: {
+          labels: lineData.labels,
+          datasets: [{
+            label: "Đường xu hướng biến động",
+            data: lineData.data,
+            borderColor: "#FF5E62",
+            backgroundColor: "transparent",
+            fill: false,
+            tension: 0.25,
+            borderWidth: 3,
+            pointBackgroundColor: "#FF5E62",
+            pointBorderColor: "#FFFFFF",
+            pointBorderWidth: 2,
+            pointRadius: 5,
+            pointHoverRadius: 7.5
+          }]
         },
-        scales: {
-          x: { grid: { display: false } },
-          y: { grid: { color: "rgba(0,0,0,0.04)" } }
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(ctx) {
+                  const val = ctx.raw || 0;
+                  return ` Giá trị: ${formatMetricValue(val, lineData.unit)}`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { font: { family: "'Be Vietnam Pro', 'Inter', sans-serif", size: 10.5 } }
+            },
+            y: {
+              grid: { color: "rgba(0,0,0,0.04)" },
+              ticks: { font: { family: "'Be Vietnam Pro', 'Inter', sans-serif", size: 10.5 } }
+            }
+          }
         }
-      }
-    });
+      });
+    }
 
-    // 2. Category Breakdown Chart (Bar)
+    // 2. BIỂU ĐỒ THANH NGANG ĐỂ XẾP HẠNG (HORIZONTAL RANKING BAR CHART)
+    if (state.charts.ranking) state.charts.ranking.destroy();
+    const rankCanvas = document.getElementById("rankingChart");
+    if (rankCanvas) {
+      const rankCtx = rankCanvas.getContext("2d");
+      const rankData = chartsData.ranking_bar || { labels: [], data: [], formatted_values: [] };
+      const rankTitleEl = document.getElementById("rankingChartTitle");
+      if (rankTitleEl) rankTitleEl.textContent = rankData.title || "Bảng Xếp Hạng Top Hiệu Suất";
+
+      const rankingColors = [
+        "#FF5E62", // #1
+        "#FF755A", // #2
+        "#FF8E53", // #3
+        "#FFA766", // #4
+        "#FFBF7B", // #5
+        "#FFD492", // #6
+        "#FFE4AB"  // #7
+      ];
+
+      state.charts.ranking = new Chart(rankCtx, {
+        type: "bar",
+        data: {
+          labels: rankData.labels,
+          datasets: [{
+            label: "Giá trị xếp hạng",
+            data: rankData.data,
+            backgroundColor: rankingColors.slice(0, rankData.labels.length),
+            borderRadius: 7,
+            borderSkipped: false,
+            barPercentage: 0.72
+          }]
+        },
+        options: {
+          indexAxis: "y", // THANH NGANG XẾP HẠNG
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function(items) {
+                  if (!items.length) return "";
+                  const idx = items[0].dataIndex;
+                  return `Hạng #${idx + 1}: ${items[0].label}`;
+                },
+                label: function(ctx) {
+                  const idx = ctx.dataIndex;
+                  const fmt = (rankData.formatted_values && rankData.formatted_values[idx])
+                              ? rankData.formatted_values[idx]
+                              : formatMetricValue(ctx.raw, rankData.unit);
+                  return ` Giá trị: ${fmt}`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { 
+              grid: { color: "rgba(0,0,0,0.04)" },
+              ticks: { font: { family: "'Nunito', sans-serif", size: 10 } }
+            },
+            y: { 
+              grid: { display: false },
+              ticks: { 
+                font: { family: "'Nunito', sans-serif", size: 10.5, weight: "700" },
+                color: "#1E202E"
+              }
+            }
+          }
+        }
+      });
+    }
+
+    // 3. BIỂU ĐỒ CỘT: PHÂN TÍCH THEO PHÂN NHÓM CỐT LÕI
     if (state.charts.category) state.charts.category.destroy();
-    const catCtx = document.getElementById("categoryChart").getContext("2d");
-    const catData = chartsData.category_bar || { labels: [], data: [] };
-    document.getElementById("chart2Title").textContent = catData.title || "Đóng Góp Theo Phân Nhóm";
+    const catCanvas = document.getElementById("categoryChart");
+    if (catCanvas) {
+      const catCtx = catCanvas.getContext("2d");
+      const catData = chartsData.category_bar || { labels: [], data: [] };
+      const catTitleEl = document.getElementById("chart2Title");
+      if (catTitleEl) catTitleEl.textContent = catData.title || "Đóng Góp Theo Phân Nhóm";
 
-    state.charts.category = new Chart(catCtx, {
-      type: "bar",
-      data: {
-        labels: catData.labels,
-        datasets: [{
-          label: "Quy mô",
-          data: catData.data,
-          backgroundColor: [
-            "#FF6B8B",
-            "#FF8E53",
-            "#FFAAA6",
-            "#FFD3B6",
-            "#A8E6CF",
-            "#DED2F9",
-            "#C3ACD0"
-          ],
-          borderRadius: 8
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
+      state.charts.category = new Chart(catCtx, {
+        type: "bar",
+        data: {
+          labels: catData.labels,
+          datasets: [{
+            label: "Quy mô",
+            data: catData.data,
+            backgroundColor: [
+              "#FF6B8B",
+              "#FF8E53",
+              "#FFAAA6",
+              "#FFD3B6",
+              "#A8E6CF",
+              "#DED2F9",
+              "#C3ACD0"
+            ],
+            borderRadius: 7
+          }]
         },
-        scales: {
-          x: { grid: { display: false } },
-          y: { grid: { color: "rgba(0,0,0,0.04)" } }
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(ctx) {
+                  return ` Quy mô: ${formatMetricValue(ctx.raw, catData.unit)}`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { 
+              grid: { display: false },
+              ticks: { font: { family: "'Nunito', sans-serif", size: 10 } }
+            },
+            y: { 
+              grid: { color: "rgba(0,0,0,0.04)" },
+              ticks: { font: { family: "'Nunito', sans-serif", size: 10 } }
+            }
+          }
         }
-      }
-    });
+      });
+    }
 
-    // 3. Distribution Pie / Doughnut
+    // 4. BIỂU ĐỒ TỶ TRỌNG ĐÓNG GÓP: VỪA GIÁ TRỊ SỐ, VỪA GIÁ TRỊ PHẦN TRĂM
     if (state.charts.distribution) state.charts.distribution.destroy();
-    const distCtx = document.getElementById("distributionChart").getContext("2d");
-    const distData = chartsData.distribution_pie || { labels: [], data: [] };
-    document.getElementById("chart3Title").textContent = distData.title || "Cơ Cấu Tỷ Trọng Phân Phối";
+    const distCanvas = document.getElementById("distributionChart");
+    if (distCanvas) {
+      const distCtx = distCanvas.getContext("2d");
+      const distData = chartsData.distribution_pie || { labels: [], data: [], formatted_values: [], percentages: [] };
+      const distTitleEl = document.getElementById("chart3Title");
+      if (distTitleEl) distTitleEl.textContent = distData.title || "Cơ Cấu Tỷ Trọng Đóng Góp";
 
-    state.charts.distribution = new Chart(distCtx, {
-      type: "doughnut",
-      data: {
-        labels: distData.labels,
-        datasets: [{
-          data: distData.data,
-          backgroundColor: [
-            "#FF6B8B",
-            "#FF9F7F",
-            "#FFD166",
-            "#06D6A0",
-            "#118AB2"
-          ],
-          borderWidth: 2,
-          borderColor: "#FFFFFF"
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { position: "right" }
+      const palette = [
+        "#FF5E62",
+        "#FF8E53",
+        "#FFAA00",
+        "#10B981",
+        "#3B82F6",
+        "#8B5CF6",
+        "#EC4899"
+      ];
+
+      const totalVal = (distData.data || []).reduce((a, b) => a + Number(b), 0);
+
+      state.charts.distribution = new Chart(distCtx, {
+        type: "doughnut",
+        data: {
+          labels: distData.labels,
+          datasets: [{
+            data: distData.data,
+            backgroundColor: palette.slice(0, distData.labels.length),
+            borderWidth: 2.5,
+            borderColor: "#FFFFFF"
+          }]
         },
-        cutout: "68%"
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: "66%",
+          plugins: {
+            legend: {
+              position: "right",
+              labels: {
+                boxWidth: 12,
+                padding: 10,
+                font: { family: "'Nunito', sans-serif", size: 11, weight: "700" },
+                generateLabels: function(chart) {
+                  const data = chart.data;
+                  if (data.labels.length && data.datasets.length) {
+                    const dataset = data.datasets[0];
+                    return data.labels.map((lbl, i) => {
+                      const raw = dataset.data[i] || 0;
+                      const pct = (distData.percentages && distData.percentages[i] !== undefined)
+                                  ? distData.percentages[i]
+                                  : (totalVal > 0 ? ((raw / totalVal) * 100).toFixed(1) : 0);
+                      const fmt = (distData.formatted_values && distData.formatted_values[i])
+                                  ? distData.formatted_values[i]
+                                  : formatMetricValue(raw, distData.unit);
+                      return {
+                        text: `${lbl}: ${fmt} (${pct}%)`,
+                        fillStyle: dataset.backgroundColor[i % dataset.backgroundColor.length],
+                        hidden: isNaN(dataset.data[i]) || chart.getDatasetMeta(0).data[i].hidden,
+                        index: i
+                      };
+                    });
+                  }
+                  return [];
+                }
+              }
+            },
+            tooltip: {
+              callbacks: {
+                label: function(ctx) {
+                  const idx = ctx.dataIndex;
+                  const raw = ctx.raw || 0;
+                  const pct = (distData.percentages && distData.percentages[idx] !== undefined)
+                              ? distData.percentages[idx]
+                              : (totalVal > 0 ? ((raw / totalVal) * 100).toFixed(1) : 0);
+                  const fmt = (distData.formatted_values && distData.formatted_values[idx])
+                              ? distData.formatted_values[idx]
+                              : formatMetricValue(raw, distData.unit);
+                  return ` ${ctx.label}: ${fmt} (Tỷ trọng: ${pct}%)`;
+                }
+              }
+            }
+          }
+        }
+      });
+
+      // Render Contribution Breakdown Pills below the chart (Vừa giá trị số, vừa giá trị %)
+      const pillsContainer = document.getElementById("distributionPills");
+      if (pillsContainer && distData.labels) {
+        pillsContainer.innerHTML = distData.labels.map((lbl, idx) => {
+          const raw = distData.data[idx] || 0;
+          const pct = (distData.percentages && distData.percentages[idx] !== undefined)
+                      ? distData.percentages[idx]
+                      : (totalVal > 0 ? ((raw / totalVal) * 100).toFixed(1) : 0);
+          const fmt = (distData.formatted_values && distData.formatted_values[idx])
+                      ? distData.formatted_values[idx]
+                      : formatMetricValue(raw, distData.unit);
+          const col = palette[idx % palette.length];
+          return `
+            <div class="contrib-pill">
+              <span class="contrib-dot" style="background: ${col}"></span>
+              <span class="contrib-name">${lbl}</span>
+              <span class="contrib-val">${fmt}</span>
+              <span class="contrib-pct">${pct}%</span>
+            </div>
+          `;
+        }).join("");
       }
-    });
+    }
   }
 
   // ===================================================

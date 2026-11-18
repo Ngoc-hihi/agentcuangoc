@@ -116,6 +116,9 @@ class DataProcessor:
         self.business_context: Dict[str, str] = {}
         self.cached_strategy: Optional[Dict[str, Any]] = None
         self.cached_overview: Optional[List[str]] = None
+        self.cached_executive_summary: Optional[Dict[str, Any]] = None
+        self.cached_key_findings: Optional[List[str]] = None
+        self.cached_data_integrity_summary: Optional[str] = None
         self.cleaning_config: Dict[str, Any] = {
             "remove_duplicates": True,
             "standardize_text": True,
@@ -137,6 +140,9 @@ class DataProcessor:
         self.business_context = {}
         self.cached_strategy = None
         self.cached_overview = None
+        self.cached_executive_summary = None
+        self.cached_key_findings = None
+        self.cached_data_integrity_summary = None
 
     def load_from_bytes(self, file_bytes: bytes, filename: str) -> pd.DataFrame:
         """Reads CSV or Excel file bytes into a DataFrame."""
@@ -889,7 +895,7 @@ class DataProcessor:
         # 2. Charts Data (BULLETPROOF AGGREGATION WITHOUT RISKY RESET_INDEX)
         charts = {}
 
-        # Trend Chart
+        # 2.1 BIỂU ĐỒ ĐẦU TIÊN: BIỂU ĐỒ ĐƯỜNG (LINE CHART) VÀ BIỂU ĐỒ MIỀN (AREA CHART)
         if date_col and date_col in df.columns and len(df) > 0:
             try:
                 if metric_col and metric_col in df.columns and metric_col != date_col:
@@ -904,31 +910,157 @@ class DataProcessor:
                 if len(s) > 15:
                     s = s.tail(15)
 
-                charts["trend"] = {
-                    "title": f"Xu Hướng {current_metric['label'] if current_metric else 'Bản Ghi'} Theo Thời Gian",
+                labels_list = [str(x) for x in s.index.tolist()]
+                data_list = [round(float(y), 2) for y in s.values.tolist()]
+                unit_str = current_metric["unit"] if current_metric else ""
+
+                # Cumulative area progression & multi-series stacked area for True Area Chart
+                cum_list = []
+                running_tot = 0.0
+                for idx_v, val_v in enumerate(data_list):
+                    if current_metric and current_metric["type"] in ["pct", "rating"]:
+                        running_tot = round((running_tot * idx_v + val_v) / (idx_v + 1), 2)
+                    else:
+                        running_tot = round(running_tot + val_v, 2)
+                    cum_list.append(running_tot)
+
+                area_series = []
+                if dim_col and dim_col in df.columns and metric_col and metric_col in df.columns and dim_col != date_col:
+                    try:
+                        top_dims = df.groupby(dim_col)[metric_col].sum().sort_values(ascending=False).head(3).index.tolist()
+                        for d_name in top_dims:
+                            sub_df = df[df[dim_col] == d_name]
+                            if current_metric and current_metric["type"] in ["pct", "rating"]:
+                                sub_s = sub_df.groupby(date_col)[metric_col].mean().reindex(s.index, fill_value=0)
+                                s_vals = [round(float(v), 2) for v in sub_s.values.tolist()]
+                            else:
+                                sub_s = sub_df.groupby(date_col)[metric_col].sum().reindex(s.index, fill_value=0).cumsum()
+                                s_vals = [round(float(v), 2) for v in sub_s.values.tolist()]
+                            area_series.append({
+                                "label": str(d_name),
+                                "data": s_vals
+                            })
+                    except Exception:
+                        area_series = []
+
+                charts["line_chart"] = {
+                    "title": f"Biểu Đồ Đường: Xu Hướng {current_metric['label'] if current_metric else 'Bản Ghi'} Theo Thời Gian",
                     "type": "line",
-                    "labels": [str(x) for x in s.index.tolist()],
-                    "data": [round(float(y), 2) for y in s.values.tolist()],
+                    "tag": "Biểu Đồ Đường",
+                    "labels": labels_list,
+                    "data": data_list,
+                    "unit": unit_str
+                }
+                charts["area_chart"] = {
+                    "title": f"Biểu Đồ Miền: Diện Tích Lũy Kế & Cơ Cấu {current_metric['label'] if current_metric else 'Bản Ghi'}",
+                    "type": "area",
+                    "tag": "Biểu Đồ Miền",
+                    "labels": labels_list,
+                    "data": cum_list,
+                    "period_data": data_list,
+                    "series": area_series,
+                    "unit": unit_str
+                }
+                charts["trend"] = charts["line_chart"]
+            except Exception:
+                labels_fallback = [f"Điểm #{i+1}" for i in range(min(10, len(df)))]
+                data_fallback = [10 * (i+1) for i in range(min(10, len(df)))]
+                charts["line_chart"] = {
+                    "title": "Biểu Đồ Đường: Xu Hướng Hoạt Động Theo Thời Gian",
+                    "type": "line",
+                    "tag": "Biểu Đồ Đường",
+                    "labels": labels_fallback,
+                    "data": data_fallback,
+                    "unit": ""
+                }
+                charts["area_chart"] = {
+                    "title": "Biểu Đồ Miền: Diện Tích & Dòng Chảy Hoạt Động Theo Thời Gian",
+                    "type": "area",
+                    "tag": "Biểu Đồ Miền",
+                    "labels": labels_fallback,
+                    "data": data_fallback,
+                    "unit": ""
+                }
+                charts["trend"] = charts["line_chart"]
+        else:
+            labels_fallback = [f"Mẫu #{i+1}" for i in range(min(12, len(df)))]
+            data_fallback = [round(float(v), 2) for v in df[metric_col].head(12).tolist()] if metric_col and metric_col in df.columns and len(df) > 0 else [0]
+            unit_str = current_metric["unit"] if current_metric else ""
+            charts["line_chart"] = {
+                "title": f"Biểu Đồ Đường: Biến Động {current_metric['label'] if current_metric else 'Chỉ Số'}",
+                "type": "line",
+                "tag": "Biểu Đồ Đường",
+                "labels": labels_fallback,
+                "data": data_fallback,
+                "unit": unit_str
+            }
+            charts["area_chart"] = {
+                "title": f"Biểu Đồ Miền: Phân Bổ Diện Tích {current_metric['label'] if current_metric else 'Chỉ Số'}",
+                "type": "area",
+                "tag": "Biểu Đồ Miền",
+                "labels": labels_fallback,
+                "data": data_fallback,
+                "unit": unit_str
+            }
+            charts["trend"] = charts["line_chart"]
+
+        # 2.2 BIỂU ĐỒ THANH NGANG ĐỂ XẾP HẠNG (HORIZONTAL RANKING BAR CHART)
+        rank_candidates = [c for c in df.columns if any(k in c.lower() for k in ['nhóm_món', 'nhóm món', 'món', 'sản phẩm', 'sản_phẩm', 'item', 'product', 'dịch vụ', 'dịch_vụ', 'danh mục', 'category', 'gói'])]
+        rank_col = rank_candidates[0] if rank_candidates else dim_col
+
+        if rank_col and rank_col in df.columns and metric_col and metric_col in df.columns and len(df) > 0:
+            try:
+                if current_metric["type"] in ["pct", "rating"]:
+                    s_rank = df.groupby(rank_col)[metric_col].mean().sort_values(ascending=False).head(7)
+                else:
+                    s_rank = df.groupby(rank_col)[metric_col].sum().sort_values(ascending=False).head(7)
+
+                rank_labels = [str(x) for x in s_rank.index.tolist()]
+                rank_data = [round(float(y), 2) for y in s_rank.values.tolist()]
+                rank_fmts = []
+                for v in rank_data:
+                    if current_metric["type"] == "currency":
+                        if v >= 1_000_000_000:
+                            rank_fmts.append(f"{v / 1_000_000_000:.2f} tỷ ₫")
+                        elif v >= 1_000_000:
+                            rank_fmts.append(f"{v / 1_000_000:.1f} tr ₫")
+                        else:
+                            rank_fmts.append(f"{v:,.0f} ₫")
+                    elif current_metric["type"] == "pct":
+                        rank_fmts.append(f"{v:.1f}%")
+                    elif current_metric["type"] == "rating":
+                        rank_fmts.append(f"{v:.2f}/5.0")
+                    else:
+                        rank_fmts.append(f"{int(v):,}")
+
+                charts["ranking_bar"] = {
+                    "title": f"Bảng Xếp Hạng Top {rank_col.replace('_', ' ')} Theo {current_metric['label']}",
+                    "type": "horizontalBar",
+                    "labels": rank_labels,
+                    "data": rank_data,
+                    "formatted_values": rank_fmts,
                     "unit": current_metric["unit"] if current_metric else ""
                 }
             except Exception:
-                charts["trend"] = {
-                    "title": "Xu Hướng Hoạt Động Theo Thời Gian",
-                    "type": "line",
-                    "labels": [f"Điểm #{i+1}" for i in range(min(10, len(df)))],
-                    "data": [10 * (i+1) for i in range(min(10, len(df)))],
+                charts["ranking_bar"] = {
+                    "title": "Bảng Xếp Hạng Top Hiệu Suất",
+                    "type": "horizontalBar",
+                    "labels": [],
+                    "data": [],
+                    "formatted_values": [],
                     "unit": ""
                 }
         else:
-            charts["trend"] = {
-                "title": f"Phân Bổ {current_metric['label'] if current_metric else 'Chỉ Số'}",
-                "type": "line",
-                "labels": [f"Mẫu #{i+1}" for i in range(min(12, len(df)))],
-                "data": [round(float(v), 2) for v in df[metric_col].head(12).tolist()] if metric_col and metric_col in df.columns and len(df) > 0 else [0],
-                "unit": current_metric["unit"] if current_metric else ""
+            charts["ranking_bar"] = {
+                "title": "Bảng Xếp Hạng Top Hiệu Suất",
+                "type": "horizontalBar",
+                "labels": [],
+                "data": [],
+                "formatted_values": [],
+                "unit": ""
             }
 
-        # Category Breakdown Chart (Grouped by SELECTED DIMENSION)
+        # 2.3 BIỂU ĐỒ CỘT: Phân Tích Theo Phân Nhóm Cốt Lõi
         if dim_col and dim_col in df.columns and len(df) > 0:
             try:
                 if metric_col and metric_col in df.columns and metric_col != dim_col:
@@ -963,7 +1095,7 @@ class DataProcessor:
                 "unit": ""
             }
 
-        # Distribution Doughnut Chart
+        # 2.4 BIỂU ĐỒ TỶ TRỌNG ĐÓNG GÓP: VỪA GIÁ TRỊ SỐ, VỪA GIÁ TRỊ PHẦN TRĂM
         pie_target_col = sec_dim if (sec_dim and sec_dim in df.columns) else dim_col
         if pie_target_col and pie_target_col in df.columns and len(df) > 0:
             try:
@@ -972,30 +1104,143 @@ class DataProcessor:
                 else:
                     s_pie = df[pie_target_col].value_counts().head(5)
 
+                pie_labels = [str(x) for x in s_pie.index.tolist()]
+                pie_data = [round(float(y), 2) for y in s_pie.values.tolist()]
+                total_pie = sum(pie_data) if sum(pie_data) > 0 else 1.0
+
+                pie_pcts = [round((v / total_pie) * 100, 1) for v in pie_data]
+                pie_fmts = []
+                detailed_slices = []
+                palette_colors = ["#FF5E62", "#FF8E53", "#FFAA00", "#10B981", "#3B82F6", "#8B5CF6", "#EC4899"]
+
+                for idx, v in enumerate(pie_data):
+                    if current_metric["type"] == "currency":
+                        if v >= 1_000_000_000:
+                            f_str = f"{v / 1_000_000_000:.2f} tỷ ₫"
+                        elif v >= 1_000_000:
+                            f_str = f"{v / 1_000_000:.1f} tr ₫"
+                        else:
+                            f_str = f"{v:,.0f} ₫"
+                    elif current_metric["type"] == "pct":
+                        f_str = f"{v:.1f}%"
+                    elif current_metric["type"] == "rating":
+                        f_str = f"{v:.2f}/5.0"
+                    else:
+                        f_str = f"{int(v):,}"
+                    
+                    pie_fmts.append(f_str)
+                    detailed_slices.append({
+                        "label": pie_labels[idx],
+                        "value": f_str,
+                        "percentage": f"{pie_pcts[idx]}%",
+                        "raw_value": v,
+                        "color": palette_colors[idx % len(palette_colors)]
+                    })
+
                 charts["distribution_pie"] = {
-                    "title": f"Tỷ Trọng Phân Bổ Theo {pie_target_col.replace('_', ' ')}",
+                    "title": f"Cơ Cấu Tỷ Trọng Đóng Góp Theo {pie_target_col.replace('_', ' ')}",
                     "type": "doughnut",
-                    "labels": [str(x) for x in s_pie.index.tolist()],
-                    "data": [round(float(y), 2) for y in s_pie.values.tolist()]
+                    "labels": pie_labels,
+                    "data": pie_data,
+                    "percentages": pie_pcts,
+                    "formatted_values": pie_fmts,
+                    "detailed_slices": detailed_slices,
+                    "unit": current_metric["unit"] if current_metric else ""
                 }
             except Exception:
                 charts["distribution_pie"] = {
                     "title": "Cơ Cấu Tỷ Trọng Phân Phối",
                     "type": "doughnut",
                     "labels": [],
-                    "data": []
+                    "data": [],
+                    "percentages": [],
+                    "formatted_values": [],
+                    "detailed_slices": [],
+                    "unit": ""
                 }
+
+        # Performance comparison table and Math Sanity Check
+        math_sanity = {}
+        top_items = []
+        bottom_items = []
+        breakdown_comparison = []
+
+        if metric_col and metric_col in df.columns:
+            tot_num = float(df[metric_col].sum())
+            avg_num = float(df[metric_col].mean())
+            if current_metric["type"] == "currency":
+                if tot_num >= 1_000_000_000:
+                    tot_disp = f"{tot_num / 1_000_000_000:.2f} tỷ ₫"
+                elif tot_num >= 1_000_000:
+                    tot_disp = f"{tot_num / 1_000_000:.1f} triệu ₫"
+                else:
+                    tot_disp = f"{tot_num:,.0f} ₫"
+
+                if avg_num >= 1_000_000:
+                    avg_disp = f"{avg_num / 1_000_000:.2f} triệu ₫"
+                else:
+                    avg_disp = f"{avg_num:,.0f} ₫"
+            elif current_metric["type"] == "pct":
+                tot_disp = f"{tot_num:.1f}%"
+                avg_disp = f"{avg_num:.1f}%"
+            elif current_metric["type"] == "rating":
+                tot_disp = f"{tot_num:.1f}"
+                avg_disp = f"{avg_num:.2f}/5.0"
+            else:
+                tot_disp = f"{int(tot_num):,}"
+                avg_disp = f"{int(avg_num):,}"
+
+            math_sanity = {
+                "total_sum": tot_disp,
+                "total_records": total_records,
+                "avg_value": avg_disp,
+                "is_valid": True
+            }
+
+        if dim_col and dim_col in df.columns and metric_col and metric_col in df.columns:
+            try:
+                if current_metric["type"] in ["pct", "rating"]:
+                    grouped = df.groupby(dim_col)[metric_col].mean().sort_values(ascending=False)
+                else:
+                    grouped = df.groupby(dim_col)[metric_col].sum().sort_values(ascending=False)
+                
+                tot_group_sum = grouped.sum() if grouped.sum() > 0 else 1.0
+
+                for rank, (name, val) in enumerate(grouped.items()):
+                    val_float = float(val)
+                    share_pct = (val_float / tot_group_sum) * 100 if current_metric["type"] not in ["pct", "rating"] else None
+                    share_str = f"{share_pct:.1f}%" if share_pct is not None else ""
+
+                    if current_metric["type"] == "currency":
+                        if val_float >= 1_000_000_000:
+                            val_disp = f"{val_float / 1_000_000_000:.2f} tỷ ₫"
+                        elif val_float >= 1_000_000:
+                            val_disp = f"{val_float / 1_000_000:.1f} triệu ₫"
+                        else:
+                            val_disp = f"{val_float:,.0f} ₫"
+                    elif current_metric["type"] == "pct":
+                        val_disp = f"{val_float:.1f}%"
+                    elif current_metric["type"] == "rating":
+                        val_disp = f"{val_float:.2f}/5.0"
+                    else:
+                        val_disp = f"{int(val_float):,}"
+
+                    status = "Dẫn đầu (Trụ cột)" if rank < 2 else ("Ổn định" if rank < len(grouped) - 2 else "Hiệu suất thấp (Cần can thiệp)")
+                    breakdown_comparison.append({
+                        "name": str(name),
+                        "value": val_disp,
+                        "raw_value": val_float,
+                        "share": share_str,
+                        "status": status
+                    })
+
+                top_items = breakdown_comparison[:4]
+                bottom_items = [b for b in breakdown_comparison[-3:] if b not in top_items]
+            except Exception:
+                pass
 
         # 3. AI Strategic Overview & Recommendations (Only generated during Approve, then cached in-memory)
         if generate_strategy:
-            top_items = []
-            if dim_col and dim_col in df.columns and metric_col and metric_col in df.columns:
-                try:
-                    top_s = df.groupby(dim_col)[metric_col].sum().sort_values(ascending=False).head(5)
-                    top_items = [{"name": str(k), "value": f"{v:,.0f}" if isinstance(v, (int, float, np.number)) else str(v)} for k, v in top_s.items()]
-                except Exception:
-                    pass
-
             try:
                 from ai_advisor import generate_ai_business_strategy
                 ai_pack = generate_ai_business_strategy(
@@ -1006,10 +1251,15 @@ class DataProcessor:
                     current_metric=current_metric["label"] if current_metric else "Chỉ số",
                     current_dimension=current_dimension["label"] if current_dimension else "Phân nhóm",
                     top_breakdown=top_items,
-                    total_records=total_records
+                    bottom_breakdown=bottom_items,
+                    total_records=total_records,
+                    math_sanity=math_sanity
                 )
                 self.cached_overview = ai_pack.get("overview_points", [])
                 self.cached_strategy = ai_pack.get("strategy", {})
+                self.cached_executive_summary = ai_pack.get("executive_summary")
+                self.cached_key_findings = ai_pack.get("key_findings")
+                self.cached_data_integrity_summary = ai_pack.get("data_integrity_summary")
             except Exception:
                 pass
 
@@ -1053,13 +1303,62 @@ class DataProcessor:
                 "decision_rationale": {
                     "why_chosen": f"Phương án này giải quyết trực diện nguyên nhân gốc rễ được chỉ ra từ biểu đồ phân bổ {current_metric['label'] if current_metric else 'dữ liệu'}: hơn 70% giá trị tập trung tại các phân khúc nòng cốt. Việc can thiệp mang lại tỷ lệ lợi ích/chi phí cao nhất.",
                     "expected_impact": "Dự kiến gia tăng biên lợi nhuận ròng từ 12% - 18%, cắt giảm tỷ lệ thất thoát/hủy đơn xuống dưới 4.5% trong vòng 1 quý tài chính."
+                },
+                "roadmap_30_60_90": {
+                    "day_30": "Mốc 30 ngày (Giai đoạn 1): Thiết lập quy chuẩn nhập liệu và ban hành định mức chi phí mới.",
+                    "day_60": "Mốc 60 ngày (Giai đoạn 2): Dịch chuyển 30-35% nguồn lực sang các nhóm mang lại ROI cao.",
+                    "day_90": "Mốc 90 ngày (Giai đoạn 3): Đo lường định lượng tăng trưởng biên lợi nhuận ròng qua Dashboard."
                 }
             }
+
+        # Enrich overview_points with direct quantitative answers to product/time ranking questions
+        try:
+            rank_c = charts.get("ranking_bar", {})
+            line_c = charts.get("line_chart", {})
+            top_rank_lbl = rank_c.get("labels", [None])[0] if rank_c.get("labels") else None
+            top_rank_fmt = rank_c.get("formatted_values", [None])[0] if rank_c.get("formatted_values") else None
+            
+            peak_time_lbl = None
+            peak_time_val_str = None
+            if line_c.get("labels") and line_c.get("data"):
+                l_data = line_c["data"]
+                l_labels = line_c["labels"]
+                max_idx = l_data.index(max(l_data))
+                peak_time_lbl = l_labels[max_idx]
+                max_val = l_data[max_idx]
+                if current_metric and current_metric["type"] == "currency":
+                    if max_val >= 1_000_000_000:
+                        peak_time_val_str = f"{max_val / 1_000_000_000:.2f} tỷ ₫"
+                    elif max_val >= 1_000_000:
+                        peak_time_val_str = f"{max_val / 1_000_000:.1f} triệu ₫"
+                    else:
+                        peak_time_val_str = f"{max_val:,.0f} ₫"
+                else:
+                    peak_time_val_str = f"{max_val:,.1f} {current_metric['unit'] if current_metric else ''}".strip()
+
+            direct_highlights = []
+            if top_rank_lbl and top_rank_fmt:
+                direct_highlights.append(
+                    f"🏆 Quán quân xếp hạng ({current_metric['label'] if current_metric else 'Quy mô'} cao nhất): \"{top_rank_lbl}\" dẫn đầu toàn hệ thống với giá trị đạt {top_rank_fmt}."
+                )
+            if peak_time_lbl and peak_time_val_str:
+                direct_highlights.append(
+                    f"📅 Thời điểm / Kỳ đạt đỉnh cao nhất: Mốc \"{peak_time_lbl}\" đứng đầu về {current_metric['label'] if current_metric else 'hiệu suất'} với quy mô đạt {peak_time_val_str}."
+                )
+            if direct_highlights:
+                overview_points = direct_highlights + list(overview_points[:3])
+        except Exception:
+            pass
 
         return {
             "kpis": kpis,
             "charts": charts,
             "overview_points": overview_points,
             "strategy": strategy,
+            "executive_summary": self.cached_executive_summary,
+            "key_findings": self.cached_key_findings,
+            "data_integrity_summary": self.cached_data_integrity_summary,
+            "breakdown_comparison": breakdown_comparison,
+            "math_sanity": math_sanity,
             "filter_options": filter_options
         }

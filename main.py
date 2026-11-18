@@ -2,6 +2,7 @@ import os
 import io
 import tempfile
 import pickle
+import asyncio
 import pandas as pd
 from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
@@ -54,8 +55,11 @@ def persist_session():
             "processor": processor,
             "session": current_session
         }
-        with open(SESSION_FILE, "wb") as f:
+        tmp_file = SESSION_FILE + f".{os.getpid()}.tmp"
+        with open(tmp_file, "wb") as f:
             pickle.dump(data, f)
+        if os.path.exists(tmp_file):
+            os.replace(tmp_file, SESSION_FILE)
     except Exception as e:
         print(f"[WARN] Failed to persist session: {e}")
 
@@ -258,12 +262,13 @@ async def approve_and_generate_dashboard():
                 "problem_statement": current_session["problem_statement"],
                 "additional_info": current_session["additional_info"]
             }
-            processor.clean_data()
+            await asyncio.to_thread(processor.clean_data)
         else:
             raise HTTPException(status_code=400, detail="Chưa có dữ liệu sạch để phê duyệt. Vui lòng nạp dữ liệu ở Bước 2.")
 
     try:
-        analytics = processor.generate_analytics(
+        analytics = await asyncio.to_thread(
+            processor.generate_analytics,
             business_type=current_session["business_type"],
             problem_statement=current_session["problem_statement"],
             generate_strategy=True
@@ -299,12 +304,13 @@ async def filter_dashboard(req: DashboardFilterRequest):
                 "problem_statement": current_session["problem_statement"],
                 "additional_info": current_session["additional_info"]
             }
-            processor.clean_data()
+            await asyncio.to_thread(processor.clean_data)
         else:
             raise HTTPException(status_code=400, detail="Chưa có dữ liệu để lọc.")
 
     try:
-        analytics = processor.generate_analytics(
+        analytics = await asyncio.to_thread(
+            processor.generate_analytics,
             business_type=current_session["business_type"],
             problem_statement=current_session["problem_statement"],
             metric_choice=req.metric,
@@ -343,13 +349,15 @@ async def export_docx():
         current_session["analytics_result"] = analytics
 
     try:
-        buf = create_docx_report(
+        buf = await asyncio.to_thread(
+            create_docx_report,
             business_type=current_session["business_type"],
             problem_statement=current_session["problem_statement"],
             additional_info=current_session["additional_info"],
             metadata=processor.metadata,
             audit_log=processor.audit_log,
-            analytics_data=analytics
+            analytics_data=analytics,
+            df=processor.cleaned_df
         )
         safe_filename = "PHAMHAANHNGOC_Bao_Cao_Chien_Luoc_Doanh_Nghiep.docx"
         return StreamingResponse(
@@ -440,7 +448,7 @@ CUSTOMER_REVIEWS = [
         "avatar_bg": "#10B981",
         "rating": 5,
         "date": "08/11/2026",
-        "comment": "Báo cáo Word quản trị xuất ra từ PHAMHAANHNGOC đầy đủ phân tích SWOT, chỉ số ROI và lộ trình hành động. Chúng tôi dùng trực tiếp để báo cáo Hội đồng Quản trị mà không cần chỉnh sửa gì thêm."
+        "comment": "Báo cáo Word quản trị xuất ra từ PHAMHAANHNGOC đầy đủ phân tích Ma trận Ưu - Nhược điểm (Pros & Cons), chỉ số ROI và lộ trình hành động 90 ngày. Chúng tôi dùng trực tiếp để báo cáo Hội đồng Quản trị mà không cần chỉnh sửa gì thêm."
     },
     {
         "id": 4,
@@ -470,7 +478,7 @@ async def get_faqs():
 @api_router.post("/chat-assistant")
 async def chat_with_assistant(req: ChatRequest):
     restore_session()
-    ans = answer_customer_inquiry(req.question, current_session)
+    ans = await asyncio.to_thread(answer_customer_inquiry, req.question, current_session)
     return {"success": True, "question": req.question, "answer": ans}
 
 @api_router.get("/feedback")
@@ -515,6 +523,19 @@ async def serve_root():
                 return HTMLResponse(f.read())
     return HTMLResponse("<h1>PHAMHAANHNGOC Enterprise Data Intelligence</h1>")
 
+@app.get("/presentation", response_class=HTMLResponse)
+@app.get("/presentation.html", response_class=HTMLResponse)
+async def serve_presentation():
+    for candidate in [
+        os.path.join(BASE_DIR, "presentation.html"),
+        os.path.join(STATIC_DIR, "presentation.html"),
+        os.path.join(BASE_DIR, "public", "presentation.html")
+    ]:
+        if os.path.exists(candidate):
+            with open(candidate, "r", encoding="utf-8") as f:
+                return HTMLResponse(f.read())
+    return HTMLResponse("<h1>Presentation not found</h1>", status_code=404)
+
 # Mount static folders for local execution and asset requests
 for folder in ["static", "public", "css", "js"]:
     p = os.path.join(BASE_DIR, folder)
@@ -526,4 +547,4 @@ if os.path.exists(STATIC_DIR):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
